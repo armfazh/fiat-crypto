@@ -24,7 +24,7 @@ Import Stringification.Language.Compilers.ToString.int.Notations.
 
 Module Rust.
   Definition comment_module_header_block := List.map (fun line => "//! " ++ line)%string.
-  Definition comment_block := List.map (fun line => "/* " ++ line ++ " */")%string.
+  Definition comment_block := List.map (fun line => "/** " ++ line ++ " */")%string.
 
 
   (* Supported integer bitwidths *)
@@ -90,9 +90,13 @@ Module Rust.
         ""]%string
            ++ (List.flat_map
                  (fun bw
-                  => (if IntSet.mem (int.of_bitwidth false bw) bitwidths_used || IntSet.mem (int.of_bitwidth true bw) bitwidths_used
-                      then [type_prefix ++ int_type_to_string internal_private prefix (int.of_bitwidth false bw) ++ " = u8;"; (* C: typedef unsigned char prefix_uint1 *)
-                           type_prefix ++ int_type_to_string internal_private prefix (int.of_bitwidth true bw) ++ " = i8;" ]%string (* C: typedef signed char prefix_int1 *)
+                  =>
+                     let type_suffix (b : bool) := (int.of_bitwidth b bw) in
+                     let typedef_name (b : bool) := int_type_to_string internal_private prefix (type_suffix b) in
+                     let type_comment (name : string) := String.concat String.NewLine (comment_block [( name ++ " represents a byte.")%string]) in
+                     (if IntSet.mem (type_suffix false) bitwidths_used || IntSet.mem (type_suffix true) bitwidths_used
+                      then [type_comment (typedef_name false) ++ String.NewLine ++ type_prefix ++ (typedef_name false) ++ " = u8;"; (* C: typedef unsigned char prefix_uint1 *)
+                            type_comment (typedef_name true ) ++ String.NewLine ++ type_prefix ++ (typedef_name true)  ++ " = i8;"]%string (* C: typedef signed char prefix_int1 *)
                       else []))
                  [1; 2])
            ++ (if skip_typedefs
@@ -107,13 +111,12 @@ Module Rust.
            ++ [""])%list%string.
 
   (* Instead of "macros for minimum-width integer constants" we tried to
-     use numeric casts in Rust. It turns out that it wasn't needed and Rust
-     will figure out the types of the litterals, so disabling this for
-     now *)
+     use numeric casts in Rust. *)
   Definition cast_literal (prefix : string) (t : ToString.int.type) : option string :=
-    if Z.ltb (ToString.int.bitwidth_of t) 8
-    then None
-    else None.
+    let width := if Z.ltb (ToString.int.bitwidth_of t) 8
+    then 8
+    else (ToString.int.bitwidth_of t) in
+    Some ( (if int.is_unsigned t then "u" else "i") ++ Decimal.Z.to_string width )%string.
 
 
   (* Zoe: In fiat-crypto C functions are void and as such, they receive
@@ -153,7 +156,7 @@ Module Rust.
   (* Integer literal to string *)
   Definition int_literal_to_string (prefix : string) (t : IR.type.primitive) (v : BinInt.Z) : string :=
     match t, cast_literal prefix (ToString.int.of_zrange_relaxed r[v ~> v]) with
-    | IR.type.Z, Some cast => "(" ++ HexString.of_Z v ++ cast ++ ")"
+    | IR.type.Z, Some cast => HexString.of_Z v ++ "_" ++ cast
     | IR.type.Z, None => (* just print hex value, no cast *) HexString.of_Z v
     | IR.type.Zptr, _ => "#error ""literal address " ++ HexString.of_Z v ++ """;"
     end.
@@ -389,9 +392,9 @@ Module Rust.
              (f : type.for_each_lhs_of_arrow var_data t * var_data (type.base (type.final_codomain t)) * IR.expr)
     : list string :=
     let '(args, rets, body) := f in
-    ((if inline then "#[inline]" ++ String.NewLine else "") ++ (if private then "fn " else "pub fn ") ++ name ++
+    ((if inline then "#[inline(always)]" ++ String.NewLine else "") ++ (if private then "fn " else "pub fn ") ++ name ++
       "(" ++ String.concat ", " (to_arg_list internal_private all_private prefix Out rets ++ to_arg_list_for_each_lhs_of_arrow internal_private all_private prefix args) ++
-      ") -> () {")%string :: (List.map (fun s => "  " ++ s)%string (to_strings internal_private prefix body)) ++ ["}"%string]%list.
+      ") {")%string :: (List.map (fun s => "  " ++ s)%string (to_strings internal_private prefix body)) ++ ["}"%string]%list.
 
   (** In Rust, there is no munging of return arguments (they remain
       passed by pointers), so all variables are live *)
